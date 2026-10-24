@@ -7,15 +7,16 @@ import os
 import signal
 import sqlite3
 import threading
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .sources import parse_com, parse_org
+from .notifications import PHASE_RANK, format_message, notification_key, notification_phase
 from .transport import RequestError, request, send_feishu, validate_webhook
 
 LOG = logging.getLogger("radar")
 SOURCE_URLS = {"com": "https://codexresets.com/", "org": "https://codex-resets.org/api/resets"}
-SOURCE_SITES = {"com": "https://codexresets.com/", "org": "https://codex-resets.org/"}
 DEFAULTS = {"sources": ["com", "org"], "poll_interval_seconds": 60, "request_timeout_seconds": 20,
             "state_path": "data/state.sqlite3", "first_run": "latest", "max_event_age_hours": 72,
             "notify_possible": True}
@@ -85,6 +86,9 @@ class State:
         self.db.execute("CREATE TABLE IF NOT EXISTS seen (key TEXT PRIMARY KEY, recorded_at TEXT NOT NULL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS initialized (source TEXT PRIMARY KEY)")
         self.db.execute("CREATE TABLE IF NOT EXISTS health (source TEXT PRIMARY KEY, checked_at TEXT, ok INTEGER)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS observations (identity TEXT, source TEXT, payload TEXT, checked_at TEXT, PRIMARY KEY(identity,source))")
+        self.db.execute("CREATE TABLE IF NOT EXISTS deliveries (key TEXT PRIMARY KEY, identity TEXT, phase TEXT, delivered_at TEXT)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS classification_baselines (identity TEXT PRIMARY KEY)")
         self.db.commit()
 
     def seen(self, key):
@@ -105,30 +109,42 @@ class State:
         self.db.execute("INSERT OR REPLACE INTO health VALUES (?,?,?)", (source, datetime.now(timezone.utc).isoformat(), int(ok)))
         self.db.commit()
 
+    def remember(self, event, now):
+        payload = asdict(event)
+        payload["occurred_at"] = event.occurred_at.isoformat()
+        self.db.execute("INSERT OR REPLACE INTO observations VALUES (?,?,?,?)",
+                        (event.identity, event.source, json.dumps(payload, ensure_ascii=False), now.isoformat()))
+        self.db.commit()
+
+    def delivery_phases(self, identity):
+        return {row[0] for row in self.db.execute("SELECT DISTINCT phase FROM deliveries WHERE identity=?", (identity,))}
+
+    def adopt_legacy(self, identity, key):
+        """Reclassify old records silently, while allowing later execution proof.
+
+        Version 1 treated observation rows as completed. Do not replay them or let
+        that old flag hide a future real completion under the stricter policy.
+        """
+        if self.db.execute("SELECT 1 FROM classification_baselines WHERE identity=?", (identity,)).fetchone():
+            return False
+        legacy = any(self.seen(identity + ":" + phase) for phase in PHASE_RANK)
+        with self.db:
+            self.db.execute("INSERT INTO classification_baselines VALUES (?)", (identity,))
+            if legacy:
+                self.db.execute("INSERT OR IGNORE INTO seen VALUES (?,?)", (key, datetime.now(timezone.utc).isoformat()))
+        return legacy
+
+    def delivered(self, key, identity, phase):
+        recorded_at = datetime.now(timezone.utc).isoformat()
+        with self.db:
+            self.db.execute("INSERT OR IGNORE INTO seen VALUES (?,?)", (key, recorded_at))
+            self.db.execute("INSERT OR IGNORE INTO deliveries VALUES (?,?,?,?)", (key, identity, phase, recorded_at))
+
     def close(self):
         self.db.close()
         if self.lock_file:
             self.lock_file.close()
             self.lock_file = None
-
-
-def format_message(events):
-    primary = sorted(events, key=lambda e: (e.evidence != "[ CONFIRMED RESET ]", e.source))[0]
-    labels = {"confirmed": "站点记录重置", "scheduled": "重置预告 · 尚未确认执行", "possible": "可能重置 · 尚未确认"}
-    kind = "储存重置（Banked）" if primary.kind == "banked" else "普通额度重置"
-    lines = ["📡 Codex Reset Radar", labels[primary.phase] + " | " + kind, ""]
-    for event in sorted(events, key=lambda e: e.source):
-        # Fixed UTC+8 avoids OS tzdata dependencies and PST/PDT ambiguity.
-        local = event.occurred_at.astimezone(timezone(timedelta(hours=8)))
-        lines.append("来源：{}".format(SOURCE_SITES[event.source]))
-        lines.append("站点记录时间：{}（北京时间 UTC+8）".format(local.strftime("%Y-%m-%d %H:%M:%S")))
-        lines.append("来源标注：{}".format(event.evidence))
-        lines.append("公告：{}".format(event.text[:1800] + ("…" if len(event.text) > 1800 else "")))
-        lines.append("")
-    if primary.url:
-        lines.append("原始公告：" + primary.url)
-    lines.append("这是非官方追踪站点的信息；实际到账与适用范围请以自己的账户为准。")
-    return "\n".join(lines)
 
 
 def fetch_source(source, timeout):
@@ -138,7 +154,8 @@ def fetch_source(source, timeout):
 
 def poll(config, state=None, sender=None, fetcher=fetch_source, now=None, preview=False):
     now = now or datetime.now(timezone.utc)
-    groups, successful, failed = {}, [], []
+    groups, successful, failed, candidates = {}, [], [], set()
+    baselines = []
     for source in config["sources"]:
         try:
             events = fetcher(source, config["request_timeout_seconds"])
@@ -156,31 +173,52 @@ def poll(config, state=None, sender=None, fetcher=fetch_source, now=None, previe
         first = bool(state and not state.initialized(source))
         newest = max(events, key=lambda e: e.occurred_at).key
         for event in events:
+            if state:
+                state.remember(event, now)
             age = now - event.occurred_at
-            eligible = (age <= timedelta(hours=config["max_event_age_hours"])
-                        and (config["notify_possible"] or event.phase == "confirmed"))
-            if age < -timedelta(minutes=5):
-                # Keep future events pending, never consume them before their time.
+            eligible = age <= timedelta(hours=config["max_event_age_hours"])
+            if age < -timedelta(minutes=5) and event.phase not in {"possible", "scheduled"}:
+                # A future plan can be announced now; future execution cannot be confirmed now.
                 continue
-            if first and (config["first_run"] == "silent" or event.key != newest):
-                state.mark(event.key)
-                continue
+            baseline_only = first and (config["first_run"] == "silent" or event.key != newest)
+            if baseline_only:
+                baselines.append((event.identity, notification_key([event])))
             if not eligible:
                 if state:
-                    state.mark(event.key)
+                    baselines.append((event.identity, notification_key([event])))
                 continue
-            if state and state.seen(event.key):
-                continue
-            bucket = groups.setdefault(event.key, {})
-            bucket[source] = event
+            if not baseline_only and (not state or not state.seen(notification_key([event]))):
+                candidates.add(event.identity)
+            # Include already-seen current records when checking source agreement.
+            bucket = groups.setdefault(event.identity, {})
+            previous = bucket.get(source)
+            if previous is None or (event.occurred_at, PHASE_RANK[event.phase]) > (previous.occurred_at, PHASE_RANK[previous.phase]):
+                bucket[source] = event
         if first:
             state.initialize(source)
         LOG.info("source=%s parsed=%d", source, len(events))
+    # One source's historical baseline must not consume another source's new alert.
+    if state:
+        for identity, key in baselines:
+            if identity not in candidates:
+                state.mark(key)
     sent = 0
-    for key, by_source in sorted(groups.items(), key=lambda pair: min(e.occurred_at for e in pair[1].values())):
+    for identity, by_source in sorted(groups.items(), key=lambda pair: min(e.occurred_at for e in pair[1].values())):
+        events = list(by_source.values())
+        phase = notification_phase(events)
+        key = notification_key(events)
+        if state and state.adopt_legacy(identity, key):
+            continue
+        if identity not in candidates:
+            continue
         if state and state.seen(key):
             continue
-        message = format_message(list(by_source.values()))
+        if state and phase not in {"confirmed", "disputed"} and state.seen(identity + ":v2:confirmed"):
+            continue
+        if not config["notify_possible"] and phase != "confirmed":
+            continue
+        previous_phases = state.delivery_phases(identity) if state else ()
+        message = format_message(events, failed, previous_phases, now)
         if preview:
             print(message + "\n---")
         else:
@@ -190,7 +228,7 @@ def poll(config, state=None, sender=None, fetcher=fetch_source, now=None, previe
                 LOG.error("delivery failed (%s); will retry next poll", str(exc) if isinstance(exc, RequestError) else type(exc).__name__)
                 failed.append("feishu")
                 break
-            state.mark(key)
+            state.delivered(key, identity, phase)
             LOG.info("delivered event=%s sources=%s", key, ",".join(by_source))
         sent += 1
     LOG.info("poll complete sources_ok=%d sources_failed=%d messages=%d", len(successful), len(set(failed)), sent)
@@ -223,7 +261,8 @@ def main(argv=None):
         secret = os.environ.get("FEISHU_SECRET", "")
         sender = lambda text: send_feishu(webhook, text, secret, config["request_timeout_seconds"])
         if args.command == "test-message":
-            sender("📡 Codex Reset Radar\n飞书通知连通测试成功。此消息是部署测试，不代表发生额度重置。")
+            from .notifications import demo_message
+            sender(demo_message())
             LOG.info("Feishu test message accepted")
             return 0
         state = State(config["state_path"])

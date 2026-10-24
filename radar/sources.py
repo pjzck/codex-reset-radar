@@ -1,4 +1,4 @@
-"""Adapters for two independent, unofficial trackers; no browser required."""
+"""Adapters for two unofficial trackers; no browser required."""
 
 import hashlib
 import re
@@ -36,14 +36,64 @@ class Event:
     url: str
     evidence: str
     source_id: str = ""
+    basis: str = ""
 
     @property
-    def key(self):
+    def identity(self):
         match = re.search(r"/status/(\d+)", self.url)
         identity = "x:" + match.group(1) if match else self.source + ":" + self.source_id
         if not match and not self.source_id:
             identity += ":" + hashlib.sha256((self.occurred_at.isoformat() + self.text).encode()).hexdigest()
-        return identity + ":" + self.phase
+        return identity
+
+    @property
+    def key(self):
+        return self.identity + ":" + self.phase
+
+
+def execution_phase(text, declared=None, observed=False, automatic=False):
+    """Require completion evidence; a scheduled time passing is not evidence.
+
+    These deliberately conservative patterns describe reset announcements only.
+    Unrecognized wording stays unverified rather than guessing execution.
+    """
+    normalized = re.sub(r"https?://\S+", "", text).lower().replace("’", "'")
+    if declared == "possible":
+        return "possible", "来源将其标为可能重置信号，尚无执行确认"
+    if declared == "scheduled":
+        return "scheduled", "来源将其标为重置预告，尚未确认执行"
+    if observed:
+        return "reported", "站点观测记录，尚缺原始执行公告佐证"
+    negation = r"\b(?:not|never|hasn't|haven't|isn't)\s+(?:(?:yet|been|all|fully)\s+){0,3}(?:reset|done|landed|completed|propagated)\b"
+    if re.search(negation, normalized):
+        return "reported", "原文未确认执行完成"
+    if re.search(r"\b(?:will|would|should|may|might|could)\s+have\s+(?:been\s+)?(?:reset|landed|propagated|completed)\b", normalized):
+        return "scheduled", "原文描述预计完成，尚未确认实际执行"
+    if re.search(r"\b(?:if|once|when)\b[^.!?\n]{0,100}\b(?:reset|done|landed|completed|propagated)\b", normalized):
+        return "reported", "原文使用条件或等待完成的表述，尚不能确认执行"
+    completed = (
+        r"\b(?:have|has)\s+(?:now\s+)?(?:been\s+)?reset\b",
+        r"\breset(?:s)?\s+(?:has\s+been\s+)?(?:processed|completed|applied)\b",
+        r"\b(?:all|fully)\s+propagated\b",
+        r"\b(?:reset(?:s)?\s+(?:has|have)|confirmed)\s+landed\b",
+        r"\ball\s+reset\s+for\b",
+        r"\bit(?:'s|\s+is)\s+done\b",
+        r"^\s*done(?:\s+and\s+dusted)?[.!]?\s*$",
+        r"\band\s+reset[.!]\s*(?:enjoy|$)",
+        r"\bthat(?:'s|\s+is)\s+a\s+reset[.!]?",
+    )
+    if any(re.search(pattern, normalized) for pattern in completed):
+        return "confirmed", "原始公告包含明确的重置完成表述"
+    future = r"\b(?:tomorrow|scheduled|planning|will|shall|going\s+to|next\s+(?:hour|day|week)|in\s+~?\s*\d+\s+hours?|lands?\s+(?:by|before|end)|landing\s+(?:by|before|in))\b"
+    if re.search(future, normalized) or automatic:
+        reason = "原文仍为未来计划，尚未看到实际执行确认"
+        if automatic:
+            reason = "站点按计划时间标记到账，尚未看到独立执行确认"
+        return "scheduled", reason
+    ongoing = r"\b(?:loading\s+a\s+banked\s+reset|(?:we\s+are|we're)\s+resetting|reset(?:s)?\s+(?:is|are)\s+rolling\s+out)\b"
+    if re.search(ongoing, normalized):
+        return "executing", "原始公告描述正在执行或发放，尚未确认全部完成"
+    return "reported", "已收录公告，但原文尚未明确确认执行完成"
 
 
 class Node:
@@ -131,9 +181,10 @@ def parse_com(html):
         text = (expanded[0] if expanded else texts[0]).text()
         if not text:
             raise ValueError("Empty announcement")
+        phase, basis = execution_phase(text, phase, automatic="DELIVERED AS SCHEDULED" in label)
         events.append(Event("com", timestamp(dates[0]), text,
                             "banked" if "BANKED" in label else "regular",
-                            phase, url, labels[0].text()))
+                            phase, url, labels[0].text(), basis=basis))
     if not events:
         raise ValueError("No announcements found on codexresets.com; refusing an empty baseline")
     return events
@@ -150,14 +201,15 @@ def parse_org(payload):
         source = row.get("source", {})
         if not isinstance(source, dict) or source.get("type") not in {"x_post", "observed"}:
             raise ValueError("Unrecognized codex-resets.org evidence type")
-        raw_status = row.get("status", "confirmed")
-        if raw_status not in {"confirmed", "scheduled", "possible"}:
+        raw_status = row.get("status")
+        if raw_status not in {None, "confirmed", "scheduled", "possible"}:
             raise ValueError("Unrecognized codex-resets.org status")
         text = row.get("text")
         if not isinstance(text, str) or not text.strip() or not row.get("id"):
             raise ValueError("Incomplete codex-resets.org announcement")
+        phase, basis = execution_phase(text, raw_status, observed=source["type"] == "observed")
         events.append(Event("org", timestamp(row["announced_at"]), text.strip(),
-                            row["reset_type"], raw_status, safe_url(source.get("url", "")),
+                            row["reset_type"], phase, safe_url(source.get("url", "")),
                             "站点观测记录" if source["type"] == "observed" else "站点收录的 X 公告",
-                            str(row["id"])))
+                            str(row["id"]), basis))
     return events

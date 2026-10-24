@@ -85,7 +85,9 @@ def execution_phase(text, declared=None, observed=False, automatic=False):
     if any(re.search(pattern, normalized) for pattern in completed):
         return "confirmed", "原始公告包含明确的重置完成表述"
     future = r"\b(?:tomorrow|scheduled|planning|will|shall|going\s+to|next\s+(?:hour|day|week)|in\s+~?\s*\d+\s+hours?|lands?\s+(?:by|before|end)|landing\s+(?:by|before|in))\b"
-    if re.search(future, normalized) or automatic:
+    # Closing remarks about tomorrow are not a future reset schedule.
+    timing_text = re.sub(r"\bsee you\b[^.!?\n]*\btomorrow\b[^.!?\n]*", "", normalized)
+    if re.search(future, timing_text) or automatic:
         reason = "原文仍为未来计划，尚未看到实际执行确认"
         if automatic:
             reason = "站点按计划时间标记到账，尚未看到独立执行确认"

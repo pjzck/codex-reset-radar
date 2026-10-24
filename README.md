@@ -15,6 +15,8 @@ Python 3.9+，**零第三方 Python 依赖**。区分重置预告、正在执行
 
 通知首先展示**状态标题、中文内容摘要、预计重置时间、实际重置时间、状态变化、采集时间和核对结果**，再展示参考网站、链接及原文。所有生成的时间字段统一使用北京时间。站点记录时间放到参考信息中并注明“非重置时间”，不用于填补预计 / 实际时间。
 
+首行使用明确分类，例如 `重置预告 | Codex Reset Radar`、`重置确认 | Codex Reset Radar`；另有重置执行中、重置待确认、重置信号和来源分歧。
+
 中文摘要基于公告中可识别的重置动作、普通 / Banked 类型、适用用户或套餐、备用机会次数、小版本更新及故障背景提取要点；这是针对重置公告的规则摘要，不是通用全文翻译，不需要额外模型 API 或 Token。遇到不熟悉的表述不补充原文没有的信息。
 
 重置时间仅从公告原文中提取：明确日期、时刻及 UTC / 数字偏移 / PST / PDT / PT 等时区会换算到北京时间；“明天”“3 小时后”等相对表述使用原始 X 公告 ID 中的创建时间作为基准，不以抓取时间或站点记录时间代替。X ID 依据 [X 官方说明](https://docs.x.com/fundamentals/x-ids) 和 [Snowflake 原始实现](https://github.com/twitter-archive/snowflake/blob/snowflake-2010/src/main/scala/com/twitter/service/snowflake/IdWorker.scala) 解码。
@@ -63,8 +65,11 @@ FEISHU_SECRET=
 # 只抓取并预览最近 72 小时公告，不发送、不改状态，不需要 Webhook
 python -m radar preview
 
-# 发送一条包含“预告 / 已执行”两种合成演示的消息，不改变去重状态
+# 单独发送一条验收说明，然后分别发送六种分类样例，不改变去重状态
 python -m radar test-message --env-file .env
+
+# 优先使用实时采集到的历史公告，缺少的类别才用明确标记的合成样例
+python -m radar test-message --real-samples --env-file .env
 
 # 检查一次 / 持续运行
 python -m radar check --env-file .env
@@ -156,7 +161,7 @@ sudo systemctl restart codex-reset-radar
 python -m unittest discover -s tests -v
 ```
 
-自动化测试使用合成公告并模拟飞书发送，不会发送真实消息。`test-message` 是主动发送的格式验收命令，消息内醒目标明“格式演示 · 非真实重置通知”，不写任何通知或去重状态。CI 在 Python 3.9 / 3.12 / 3.14 验证预告到点不升级、执行证据升级、站点来源链接、跨站分歧、迟到佐证去重、旧状态迁移、重启持久化、失败重试和签名。
+自动化测试模拟飞书发送，不会发送真实消息。`test-message` 是主动发送的格式验收命令：说明独立一条，六种分类各发一条，间隔一秒，不合并。`--real-samples` 会重新采集两站，按完整的跨站判定选择每类最新真实案例；缺少对应历史记录的类别才用合成样例。每条样例单独标记“历史实采，非新增通知”或“合成样例，非真实通知”，后者的参考网站明确标为占位，所有来源都失败时不发送。历史案例保留实际原文及日期，不改成当前新发生的事件，也不写生产通知或去重状态。CI 在 Python 3.9 / 3.12 / 3.14 验证分类、逐条发送、真实与合成标识、时间换算、跨站核对、持久去重、旧状态迁移和签名。
 
 ## License
 

@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from radar.app import DEFAULTS, State, format_message, main, poll
-from radar.notifications import demo_message, notification_key
+from radar.notifications import CATEGORY_LABELS, demo_messages, notification_key
 from radar.sources import Event, execution_phase, parse_com, parse_org
 from radar.transport import RequestError, send_feishu, validate_webhook
 
@@ -86,6 +86,7 @@ class ParserTests(unittest.TestCase):
             "Reset all propagated. Enjoy.": "confirmed",
             "The reset has been processed.": "confirmed",
             "Loading a banked reset in everyone's paid accounts.": "executing",
+            "Loading a banked reset in everyone's paid accounts. See you again tomorrow!": "executing",
             "We're resetting usage for all paid users.": "executing",
             "The reset will have been reset tomorrow.": "scheduled",
             "We have not yet been reset.": "reported",
@@ -201,7 +202,7 @@ class PollTests(unittest.TestCase):
         observed = org_event("Codex usage limits have been reset.", evidence="observed")
         feeds = {"com": [plan], "org": [observed]}
         self.run_poll(feeds)
-        self.assertTrue(self.messages[0].startswith("🕒 Codex 重置预告"))
+        self.assertTrue(self.messages[0].startswith("🕒 重置预告 | Codex Reset Radar"))
         self.run_poll(feeds, now=NOW + timedelta(days=2))
         self.assertEqual(len(self.messages), 1)
         completed = parse_com(html(text="Done"))[0]
@@ -290,22 +291,62 @@ class MessageTests(unittest.TestCase):
         self.assertIn("原始 X 公告：\n" + URL, message)
         self.assertIn("双源状态一致", message)
 
-    def test_preview_and_completion_demo_are_unambiguously_synthetic(self):
-        message = demo_message()
-        self.assertEqual(message.count("【格式演示 · 非真实重置通知】"), 2)
-        self.assertIn("重置预告", message)
-        self.assertIn("已执行（公告确认）", message)
-        self.assertNotIn("原始 X 公告：", message)
+    def test_each_demo_category_is_a_separate_message_after_one_introduction(self):
+        messages = demo_messages(collected_at=NOW)
+        self.assertEqual(len(messages), 7)
+        self.assertTrue(messages[0].startswith("🧪 验收说明"))
+        self.assertIn("0 条历史实采，6 条合成补充", messages[0])
+        for message in messages[1:]:
+            self.assertEqual(message.count("【验收演示 · 合成样例，非真实通知】"), 1)
+            self.assertEqual(message.count("摘要："), 1)
+            self.assertNotIn("原始 X 公告：", message)
+            self.assertIn("参考网站（合成占位）", message)
+            self.assertNotIn("采集网站：", message)
+        labels = {message.splitlines()[0].split(" | ")[0].split(" ", 1)[1] for message in messages[1:]}
+        self.assertEqual(labels, set(CATEGORY_LABELS.values()))
+
+    def test_real_demo_keeps_original_information_without_faking_missing_categories(self):
+        messages = demo_messages([event(), event("org")], collected_at=NOW)
+        self.assertIn("1 条历史实采，5 条合成补充", messages[0])
+        confirmation = next(message for message in messages[1:] if "重置确认 |" in message.splitlines()[0])
+        self.assertIn("历史实采，非新增通知", confirmation)
+        self.assertIn("原始 X 公告：\n" + URL, confirmation)
+        self.assertIn("采集网站：Codex Resets", confirmation)
+        self.assertIn("双源状态一致", confirmation)
 
     @patch("radar.app.State")
     @patch("radar.app.send_feishu")
     @patch.dict("os.environ", {"FEISHU_WEBHOOK_URL": "https://open.feishu.cn/open-apis/bot/v2/hook/test-placeholder"})
     def test_test_message_never_writes_delivery_or_dedup_state(self, send_mock, state_mock):
-        with patch("radar.app.logging.basicConfig"):
+        with patch("radar.app.logging.basicConfig"), patch("radar.app.time.sleep"):
             self.assertEqual(main(["test-message"]), 0)
         state_mock.assert_not_called()
-        send_mock.assert_called_once()
-        self.assertIn("非真实重置通知", send_mock.call_args.args[1])
+        self.assertEqual(send_mock.call_count, 7)
+        payloads = [call.args[1] for call in send_mock.call_args_list]
+        self.assertIn("验收说明", payloads[0])
+        self.assertTrue(all("非真实通知" in message for message in payloads[1:]))
+
+    @patch("radar.app.State")
+    @patch("radar.app.send_feishu")
+    @patch("radar.app.fetch_source", side_effect=lambda source, timeout: [event(source)])
+    @patch.dict("os.environ", {"FEISHU_WEBHOOK_URL": "https://open.feishu.cn/open-apis/bot/v2/hook/test-placeholder"})
+    def test_real_sample_cli_fetches_sources_without_writing_production_state(self, fetch_mock, send_mock, state_mock):
+        with patch("radar.app.logging.basicConfig"), patch("radar.app.time.sleep"):
+            self.assertEqual(main(["test-message", "--real-samples"]), 0)
+        self.assertEqual(fetch_mock.call_count, 2)
+        self.assertEqual(send_mock.call_count, 7)
+        state_mock.assert_not_called()
+        self.assertIn("1 条历史实采", send_mock.call_args_list[0].args[1])
+
+    @patch("radar.app.State")
+    @patch("radar.app.send_feishu")
+    @patch("radar.app.fetch_source", side_effect=RequestError("unavailable"))
+    @patch.dict("os.environ", {"FEISHU_WEBHOOK_URL": "https://open.feishu.cn/open-apis/bot/v2/hook/test-placeholder"})
+    def test_real_sample_failure_does_not_send_a_synthetic_batch_as_real(self, fetch_mock, send_mock, state_mock):
+        with patch("radar.app.logging.basicConfig"), self.assertLogs("radar", level="ERROR"):
+            self.assertEqual(main(["test-message", "--real-samples"]), 1)
+        send_mock.assert_not_called()
+        state_mock.assert_not_called()
 
 
 class FeishuTests(unittest.TestCase):

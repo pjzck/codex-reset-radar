@@ -11,6 +11,8 @@ SOURCE_NAMES = {"com": "Codex Resets（codexresets.com）", "org": "Codex Resets
 PHASE_LABELS = {"possible": "可能重置信号", "scheduled": "重置预告", "reported": "执行待确认",
                 "executing": "正在执行", "confirmed": "已执行（公告确认）", "disputed": "来源状态存在分歧"}
 PHASE_RANK = {"possible": 0, "reported": 1, "scheduled": 2, "executing": 3, "confirmed": 4}
+CATEGORY_LABELS = {"possible": "重置信号", "scheduled": "重置预告", "reported": "重置待确认",
+                   "executing": "重置执行中", "confirmed": "重置确认", "disputed": "来源分歧"}
 
 
 def notification_phase(events):
@@ -37,9 +39,7 @@ def format_message(events, failed_sources=(), previous_phases=(), collected_at=N
     events = sorted(events, key=lambda e: e.source)
     phase = notification_phase(events)
     icons = {"possible": "💭", "scheduled": "🕒", "reported": "🔎", "executing": "🔄", "confirmed": "✅", "disputed": "⚠️"}
-    title = icons[phase] + " Codex " + PHASE_LABELS[phase]
-    if demo:
-        title = "【格式演示 · 非真实重置通知】\n" + title
+    title = icons[phase] + " " + CATEGORY_LABELS[phase] + " | Codex Reset Radar"
     kinds = {e.kind for e in events}
     agreement = "单源收录" if len(events) == 1 else "双源状态一致"
     if len(events) > 1 and len({e.phase for e in events}) > 1:
@@ -61,8 +61,11 @@ def format_message(events, failed_sources=(), previous_phases=(), collected_at=N
     expected_time, actual_time = time_labels(events, as_of=collected_at)
     if phase == "disputed":
         actual_time = "待确认（来源状态存在分歧）"
-    lines = [title, "摘要：" + summary,
-             "⏰ 预计重置时间：" + expected_time, "🕘 实际重置时间：" + actual_time]
+    lines = [title]
+    if demo:
+        lines.append("【验收演示 · 历史实采，非新增通知】" if demo == "real" else "【验收演示 · 合成样例，非真实通知】")
+    lines.extend(["摘要：" + summary,
+                  "⏰ 预计重置时间：" + expected_time, "🕘 实际重置时间：" + actual_time])
     if previous_phases and phase not in previous_phases:
         previous = max(previous_phases, key=lambda p: PHASE_RANK.get(p, -1))
         lines.append("状态更新：{} → {}".format(PHASE_LABELS[previous], PHASE_LABELS[phase]))
@@ -72,7 +75,8 @@ def format_message(events, failed_sources=(), previous_phases=(), collected_at=N
                   "交叉核对：" + agreement, "提示：" + notes[phase], "", "—— 参考来源与原文 ——"])
     for event in events:
         source_kind = "备用重置（Banked）" if event.kind == "banked" else "普通额度重置"
-        lines.extend(["", "采集网站：" + SOURCE_NAMES[event.source],
+        source_label = "参考网站（合成占位）：" if demo and demo != "real" else "采集网站："
+        lines.extend(["", source_label + SOURCE_NAMES[event.source],
                       "网站链接：" + SOURCE_SITES[event.source],
                       "本站信息判定：{} / {}".format(PHASE_LABELS[event.phase], source_kind),
                       "站点记录时间（非重置时间）：{}（北京时间）".format(event.occurred_at.astimezone(beijing).strftime("%Y-%m-%d %H:%M:%S")),
@@ -92,17 +96,47 @@ def format_message(events, failed_sources=(), previous_phases=(), collected_at=N
     return "\n".join(lines)
 
 
-def demo_message():
-    """A single clearly labelled sample message; no poll or delivery state writes."""
+def demo_messages(real_events=(), collected_at=None, failed_sources=()):
+    """One introduction, then one separate message per category; no state writes."""
     from .sources import Event
-    now = datetime.now(timezone.utc)
+    now = collected_at or datetime.now(timezone.utc)
     planned = (now + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
     executed = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M")
-    samples = []
-    for phase, body in (("scheduled", "We will reset usage for all paid users at " + planned + " UTC, together with a small update."),
-                        ("confirmed", "The reset completed for all paid users at " + executed + " UTC.")):
+    bodies = {
+        "scheduled": "We will reset usage for all paid users at " + planned + " UTC, together with a small update.",
+        "executing": "We're resetting usage for all paid users. The reset is rolling out.",
+        "confirmed": "The reset completed for all paid users at " + executed + " UTC.",
+        "reported": "A tracker recorded a reset, but no original execution confirmation is available.",
+        "possible": "A possible reset is being discussed. No execution has been confirmed.",
+    }
+    order = ("scheduled", "executing", "confirmed", "reported", "possible", "disputed")
+    cases = {}
+    for phase, body in bodies.items():
         events = [Event(source, now, body, "regular", phase, "", "合成演示，非真实网站公告", "format-demo")
                   for source in ("com", "org")]
-        samples.append(format_message(events, previous_phases=("scheduled",) if phase == "confirmed" else (),
-                                      collected_at=now, demo=True))
-    return "\n\n──────────\n\n".join(samples)
+        cases[phase] = (events, True)
+    cases["disputed"] = ([cases["scheduled"][0][0], cases["confirmed"][0][1]], True)
+    grouped = {}
+    for event in real_events:
+        by_source = grouped.setdefault(event.identity, {})
+        previous = by_source.get(event.source)
+        if previous is None or (event.occurred_at, PHASE_RANK[event.phase]) > (previous.occurred_at, PHASE_RANK[previous.phase]):
+            by_source[event.source] = event
+    # Use the most recent real example of each available category, with all its sources.
+    for by_source in sorted(grouped.values(), key=lambda items: max(e.occurred_at for e in items.values())):
+        events = list(by_source.values())
+        cases[notification_phase(events)] = (events, "real")
+    real_count = sum(origin == "real" for _, origin in cases.values())
+    intro = ("🧪 验收说明 | Codex Reset Radar\n"
+             "接下来分别发送 6 条独立样例：重置预告、重置执行中、重置确认、重置待确认、重置信号、来源分歧。\n"
+             "本批次：{} 条历史实采，{} 条合成补充。\n"
+             "历史实采保留原公告、来源与日期；没有对应真实案例的类别才使用合成样例，参考网站会标为占位。\n"
+             "全部用于最终版式验收，不表示此刻新增重置，也不会写入生产通知或去重记录。").format(real_count, len(order) - real_count)
+    if failed_sources:
+        intro += "\n采集暂不可用：" + "、".join(SOURCE_NAMES[source] for source in failed_sources)
+    messages = [intro]
+    for phase in order:
+        events, origin = cases[phase]
+        messages.append(format_message(events, collected_at=now, demo=origin,
+                                       failed_sources=failed_sources if origin == "real" else ()))
+    return messages

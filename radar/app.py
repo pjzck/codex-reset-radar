@@ -7,6 +7,7 @@ import os
 import signal
 import sqlite3
 import threading
+import time
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -240,7 +241,10 @@ def main(argv=None):
     parser.add_argument("command", choices=["run", "check", "preview", "test-message", "status"], nargs="?", default="run")
     parser.add_argument("--config", default=None, help="JSON configuration file")
     parser.add_argument("--env-file", default=None, help="Private environment file (never commit it)")
+    parser.add_argument("--real-samples", action="store_true", help="For test-message: fetch real historical examples; fill missing categories with labelled synthetic samples")
     args = parser.parse_args(argv)
+    if args.real_samples and args.command != "test-message":
+        parser.error("--real-samples is only supported with test-message")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     state = None
     try:
@@ -261,9 +265,23 @@ def main(argv=None):
         secret = os.environ.get("FEISHU_SECRET", "")
         sender = lambda text: send_feishu(webhook, text, secret, config["request_timeout_seconds"])
         if args.command == "test-message":
-            from .notifications import demo_message
-            sender(demo_message())
-            LOG.info("Feishu test message accepted")
+            from .notifications import demo_messages
+            real_events, failed_sources = [], []
+            if args.real_samples:
+                for source in config["sources"]:
+                    try:
+                        real_events.extend(fetch_source(source, config["request_timeout_seconds"]))
+                    except Exception as exc:
+                        LOG.error("demo source=%s failed (%s)", source, type(exc).__name__)
+                        failed_sources.append(source)
+                if not real_events:
+                    raise RequestError("No real sample source available; no demo messages sent")
+            messages = demo_messages(real_events, failed_sources=failed_sources)
+            for number, message in enumerate(messages, 1):
+                if number > 1:
+                    time.sleep(1)
+                sender(message)
+                LOG.info("Feishu demo message accepted (%d/%d)", number, len(messages))
             return 0
         state = State(config["state_path"])
         if args.command == "check":

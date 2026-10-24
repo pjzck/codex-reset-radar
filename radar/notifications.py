@@ -45,18 +45,45 @@ def format_message(events, failed_sources=(), previous_phases=(), collected_at=N
         agreement = "双源收录，确认程度不同"
     if phase == "disputed":
         agreement = "来源结论不一致，暂不判定为执行完成"
-    lines = [title, "Codex Reset Radar", "类型：" + kind, "交叉核对：" + agreement]
+    summaries = {
+        "possible": "发现{}的可能信号，计划与执行均未确认。".format(kind),
+        "scheduled": "{}已有预告，尚未确认实际执行。".format(kind),
+        "reported": "发现{}相关记录，执行情况仍待确认。".format(kind),
+        "executing": "{}正在执行或发放，尚未确认全部生效。".format(kind),
+        "confirmed": "{}已有明确完成公告，可查看账户确认额度。".format(kind),
+        "disputed": "来源对重置状态或类型的描述不一致，暂不确认已执行。",
+    }
+    if len(kinds) > 1:
+        summaries["disputed"] = "类型待核实；" + summaries["disputed"]
+    notes = {
+        "possible": "尚未确认重置计划或执行。",
+        "scheduled": "预计时间到达后仍需执行确认，不会自动视为已执行。",
+        "reported": "站点记录或含糊表述不等于执行确认。",
+        "executing": "正在执行不等于所有账户已经生效。",
+        "confirmed": "个人额度及适用范围以自己的账户为准。",
+        "disputed": "保留双方信息并继续检查。",
+    }
+    lines = [title, "摘要：" + summaries[phase]]
     if previous_phases and phase not in previous_phases:
         previous = max(previous_phases, key=lambda p: PHASE_RANK.get(p, -1))
         lines.append("状态更新：{} → {}".format(PHASE_LABELS[previous], PHASE_LABELS[phase]))
-    local_time = (collected_at or datetime.now(timezone.utc)).astimezone(timezone(timedelta(hours=8)))
-    lines.append("采集时间：{}（北京时间 UTC+8）".format(local_time.strftime("%Y-%m-%d %H:%M:%S")))
+    beijing = timezone(timedelta(hours=8))
+    marked_times = {event.occurred_at.astimezone(beijing).strftime("%Y-%m-%d %H:%M:%S") for event in events}
+    if len(marked_times) == 1:
+        lines.append("站点标注时间：{}（北京时间 UTC+8）".format(next(iter(marked_times))))
+    else:
+        lines.append("站点标注时间（北京时间 UTC+8，各站不一致）：")
+        for event in events:
+            domain = "codexresets.com" if event.source == "com" else "codex-resets.org"
+            lines.append("· {}：{}".format(domain, event.occurred_at.astimezone(beijing).strftime("%Y-%m-%d %H:%M:%S")))
+    local_time = (collected_at or datetime.now(timezone.utc)).astimezone(beijing)
+    lines.extend(["采集时间：{}（北京时间 UTC+8）".format(local_time.strftime("%Y-%m-%d %H:%M:%S")),
+                  "交叉核对：" + agreement, "提示：" + notes[phase], "", "—— 参考来源与原文 ——"])
     for event in events:
-        local = event.occurred_at.astimezone(timezone(timedelta(hours=8)))
+        source_kind = "备用重置（Banked）" if event.kind == "banked" else "普通额度重置"
         lines.extend(["", "采集网站：" + SOURCE_NAMES[event.source],
                       "网站链接：" + SOURCE_SITES[event.source],
-                      "本站信息判定：" + PHASE_LABELS[event.phase],
-                      "站点标注时间：{}（北京时间 UTC+8）".format(local.strftime("%Y-%m-%d %H:%M:%S")),
+                      "本站信息判定：{} / {}".format(PHASE_LABELS[event.phase], source_kind),
                       "来源标注：" + event.evidence])
         if event.basis:
             lines.append("判断依据：" + event.basis)
@@ -67,15 +94,7 @@ def format_message(events, failed_sources=(), previous_phases=(), collected_at=N
     if failed_sources:
         names = "、".join(SOURCE_NAMES[source] for source in sorted(set(failed_sources)))
         lines.extend(["", "校验暂不可用：" + names])
-    notes = {
-        "possible": "这是可能重置信号，尚未确认计划或执行。",
-        "scheduled": "这是预告；预计时间到达后仍需执行确认，不会自动视为已执行。",
-        "reported": "目前只有站点记录或含糊表述，尚未确认实际执行。",
-        "executing": "公告描述正在执行，尚未确认所有账户生效。",
-        "confirmed": "执行结论依据采集到的公告；个人额度及适用范围请查看自己的账户。",
-        "disputed": "两站表述不一致，保留双方信息并继续检查。",
-    }
-    lines.extend(["", notes[phase]])
+    lines.extend(["", "Codex Reset Radar"])
     return "\n".join(lines)
 
 

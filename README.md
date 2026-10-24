@@ -17,6 +17,8 @@ Python 3.9+，**零第三方 Python 依赖**。区分重置预告、正在执行
 
 首行使用明确分类，例如 `重置预告 | Codex Reset Radar`、`重置确认 | Codex Reset Radar`；另有重置执行中、重置待确认、重置信号和来源分歧。
 
+摘要后单独列出执行状态。“已确认执行”与“具体几点执行”分开：完成公告没有给出时刻时，仍显示执行已确认，时间注明“具体时刻待确认（原公告未披露；执行本身已确认）”。
+
 中文摘要基于公告中可识别的重置动作、普通 / Banked 类型、适用用户或套餐、备用机会次数、小版本更新及故障背景提取要点；这是针对重置公告的规则摘要，不是通用全文翻译，不需要额外模型 API 或 Token。遇到不熟悉的表述不补充原文没有的信息。
 
 重置时间仅从公告原文中提取：明确日期、时刻及 UTC / 数字偏移 / PST / PDT / PT 等时区会换算到北京时间；“明天”“3 小时后”等相对表述使用原始 X 公告 ID 中的创建时间作为基准，不以抓取时间或站点记录时间代替。X ID 依据 [X 官方说明](https://docs.x.com/fundamentals/x-ids) 和 [Snowflake 原始实现](https://github.com/twitter-archive/snowflake/blob/snowflake-2010/src/main/scala/com/twitter/service/snowflake/IdWorker.scala) 解码。

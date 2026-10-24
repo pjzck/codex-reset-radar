@@ -61,10 +61,20 @@ def format_message(events, failed_sources=(), previous_phases=(), collected_at=N
     expected_time, actual_time = time_labels(events, as_of=collected_at)
     if phase == "disputed":
         actual_time = "待确认（来源状态存在分歧）"
+    execution_labels = {
+        "confirmed": "✅ 已确认执行",
+        "executing": "🔄 正在执行，尚未确认全部完成",
+        "scheduled": "尚未确认执行（当前为预告）",
+        "reported": "待核实，尚无明确执行确认",
+        "possible": "尚未确认计划或执行",
+        "disputed": "来源存在分歧，暂不确认执行",
+    }
+    if phase == "confirmed" and actual_time == "待确认":
+        actual_time = "具体时刻待确认（原公告未披露；执行本身已确认）"
     lines = [title]
     if demo:
         lines.append("【验收演示 · 历史实采，非新增通知】" if demo == "real" else "【验收演示 · 合成样例，非真实通知】")
-    lines.extend(["摘要：" + summary,
+    lines.extend(["摘要：" + summary, "执行状态：" + execution_labels[phase],
                   "⏰ 预计重置时间：" + expected_time, "🕘 实际重置时间：" + actual_time])
     if previous_phases and phase not in previous_phases:
         previous = max(previous_phases, key=lambda p: PHASE_RANK.get(p, -1))

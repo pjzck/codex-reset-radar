@@ -56,7 +56,8 @@ class ResetTimeTests(unittest.TestCase):
     def test_completion_without_time_never_uses_post_or_tracker_time(self):
         self.assertEqual(time_labels([record("Done", "confirmed")]), ("待确认", "待确认"))
         message = format_message([record("Done", "confirmed")], collected_at=RECORDED)
-        self.assertIn("🕘 实际重置时间：待确认", message)
+        self.assertIn("执行状态：✅ 已确认执行", message)
+        self.assertIn("🕘 实际重置时间：具体时刻待确认", message)
         self.assertLess(message.index("实际重置时间："), message.index("参考来源与原文"))
         self.assertGreater(message.index("站点记录时间（非重置时间）"), message.index("参考来源与原文"))
 

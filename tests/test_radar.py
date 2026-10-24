@@ -46,6 +46,11 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parse_com(html("[ BANKED RESET // CONFIRMED ]"))[0].kind, "banked")
         self.assertIn("OPERATOR", parse_com(html("[ CONFIRMED RESET // OPERATOR CONFIRMED ]"))[0].evidence)
 
+    def test_delivered_as_scheduled_means_delivered(self):
+        parsed = parse_com(html("[ BANKED RESET // DELIVERED AS SCHEDULED ]"))[0]
+        self.assertEqual(parsed.phase, "confirmed")
+        self.assertEqual(parsed.kind, "banked")
+
     def test_schema_drift_and_empty_page_fail_closed(self):
         for body in ("<html>challenge</html>", html("[ UNKNOWN ]"), html().replace("log-rel", "changed").replace("data-datetime", "unknown")):
             with self.assertRaises(ValueError):

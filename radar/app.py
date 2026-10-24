@@ -16,7 +16,7 @@ from .transport import RequestError, request, send_feishu, validate_webhook
 LOG = logging.getLogger("radar")
 SOURCE_URLS = {"com": "https://codexresets.com/", "org": "https://codex-resets.org/api/resets"}
 SOURCE_SITES = {"com": "https://codexresets.com/", "org": "https://codex-resets.org/"}
-DEFAULTS = {"sources": ["com", "org"], "poll_interval_seconds": 120, "request_timeout_seconds": 20,
+DEFAULTS = {"sources": ["com", "org"], "poll_interval_seconds": 60, "request_timeout_seconds": 20,
             "state_path": "data/state.sqlite3", "first_run": "latest", "max_event_age_hours": 72,
             "notify_possible": True}
 
@@ -76,7 +76,12 @@ class State:
                 self.lock_file.close()
                 self.lock_file = None
                 raise RuntimeError("Another sender is using this state database") from None
-        self.db = sqlite3.connect(path, timeout=30)
+        try:
+            self.db = sqlite3.connect(path, timeout=30)
+        except Exception:
+            if self.lock_file:
+                self.lock_file.close()
+            raise
         self.db.execute("CREATE TABLE IF NOT EXISTS seen (key TEXT PRIMARY KEY, recorded_at TEXT NOT NULL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS initialized (source TEXT PRIMARY KEY)")
         self.db.execute("CREATE TABLE IF NOT EXISTS health (source TEXT PRIMARY KEY, checked_at TEXT, ok INTEGER)")

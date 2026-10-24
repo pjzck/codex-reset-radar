@@ -115,6 +115,8 @@ def parse_com(html):
         label = labels[0].text().upper()
         if any(token in label for token in ("POSSIBLE", "TEASER", "UNCONFIRMED")):
             phase = "possible"
+        elif "DELIVERED AS SCHEDULED" in label:
+            phase = "confirmed"
         elif any(token in label for token in ("SCHEDULED", "PLANNED", "PENDING", "ANNOUNCED")):
             phase = "scheduled"
         elif "CONFIRMED" in label:

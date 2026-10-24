@@ -15,6 +15,12 @@ Python 3.9+，**零第三方 Python 依赖**。支持普通重置、Banked 重�
 
 同一 X 公告 ID、同一阶段只发一次；跨站时间相差一小时也不会重复。预告之后变为确认，会再通知一次。不同 X 公告仍视为不同事件。无 X 链接的记录按站点 ID 去重。轮询只读取公开页面，不需要 Codex Token、X 账号或浏览器。
 
+### RSS 与订阅
+
+2026-10-24 检查结果：两个站点均未发现公开 RSS / Atom / JSON Feed；首页没有 Feed 自动发现链接，`/rss.xml`、`/feed.xml`、`/atom.xml`、`/feed.json` 均返回 404，站点地图也没有订阅源。
+
+`.com` 有[邮件订阅入口](https://codexresets.com/#subscribe)，需要邮箱确认；不是机器推送 API。`.org` 的 `/api/resets` 返回 JSON，响应为 `Cache-Control: no-store, must-revalidate`，适合定时检查。目前采用每轮结束后等待 60 秒再检查；`.com` 首页响应还声明 `max-age=60, s-maxage=120`，实际通知延迟包括网站自身同步、共享缓存和本机器检查间隔，不能承诺秒级到账。上述为公开入口的检查结果，不代表不存在未公开接口。
+
 ## 本地运行
 
 ```bash
@@ -56,7 +62,7 @@ PowerShell 中用 `Copy-Item .env.example .env` 替代 `cp` 也可以。所有�
 | 配置 | 默认 | 含义 |
 | --- | --- | --- |
 | `sources` | `["com", "org"]` | 选择一个或两个来源 |
-| `poll_interval_seconds` | `120` | 每轮结束后等待秒数，最小 30 秒 |
+| `poll_interval_seconds` | `60` | 每轮结束后等待秒数，最小 30 秒 |
 | `request_timeout_seconds` | `20` | 单次网络请求超时 |
 | `state_path` | `data/state.sqlite3` | 持久去重数据库；`RADAR_STATE_PATH` 可覆盖 |
 | `first_run` | `"latest"` | 首次每个来源只通知最新且在时效内的一条；`"silent"` 只建立基线 |

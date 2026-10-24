@@ -13,12 +13,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .sources import parse_com, parse_org
+from .reset_site import FORECAST_URL, fetch_reset, fetch_reset_samples, reset_demo_messages
 from .notifications import PHASE_RANK, format_message, notification_key, notification_phase
 from .transport import RequestError, request, send_feishu, validate_webhook
 
 LOG = logging.getLogger("radar")
-SOURCE_URLS = {"com": "https://codexresets.com/", "org": "https://codex-resets.org/api/resets"}
-DEFAULTS = {"sources": ["com", "org"], "poll_interval_seconds": 60, "request_timeout_seconds": 20,
+SOURCE_URLS = {"reset": FORECAST_URL, "com": "https://codexresets.com/", "org": "https://codex-resets.org/api/resets"}
+DEFAULTS = {"sources": ["reset"], "poll_interval_seconds": 60, "request_timeout_seconds": 20,
             "state_path": "data/state.sqlite3", "first_run": "latest", "max_event_age_hours": 72,
             "notify_possible": True}
 
@@ -28,7 +29,7 @@ def settings(path):
     if path:
         config.update(json.loads(Path(path).read_text(encoding="utf-8-sig")))
     if not isinstance(config["sources"], list) or not config["sources"] or not all(s in SOURCE_URLS for s in config["sources"]):
-        raise ValueError("sources must be a nonempty list containing com and/or org")
+        raise ValueError("sources must contain reset (default), or legacy com/org")
     config["sources"] = list(dict.fromkeys(config["sources"]))
     for field, minimum in (("poll_interval_seconds", 30), ("request_timeout_seconds", 1), ("max_event_age_hours", 1)):
         if type(config[field]) not in (int, float) or not minimum <= config[field] <= 604800:
@@ -99,6 +100,10 @@ class State:
         self.db.execute("INSERT OR IGNORE INTO seen VALUES (?,?)", (key, datetime.now(timezone.utc).isoformat()))
         self.db.commit()
 
+    def completed(self, identity):
+        return self.seen(identity + ":v2:confirmed") or self.db.execute(
+            "SELECT 1 FROM seen WHERE key LIKE ? LIMIT 1", (identity + ":v3:confirmed:%",)).fetchone() is not None
+
     def initialized(self, source):
         return self.db.execute("SELECT 1 FROM initialized WHERE source=?", (source,)).fetchone() is not None
 
@@ -149,6 +154,8 @@ class State:
 
 
 def fetch_source(source, timeout):
+    if source == "reset":
+        return fetch_reset(timeout)
     body = request(SOURCE_URLS[source], timeout=timeout)
     return parse_com(body) if source == "com" else parse_org(json.loads(body))
 
@@ -160,7 +167,7 @@ def poll(config, state=None, sender=None, fetcher=fetch_source, now=None, previe
     for source in config["sources"]:
         try:
             events = fetcher(source, config["request_timeout_seconds"])
-            if not events:
+            if not events and source != "reset":
                 raise ValueError("Empty source result")
         except Exception as exc:
             LOG.error("source=%s fetch/parse failed (%s)", source, type(exc).__name__)
@@ -171,6 +178,11 @@ def poll(config, state=None, sender=None, fetcher=fetch_source, now=None, previe
         successful.append(source)
         if state:
             state.health(source, True)
+        if not events:
+            if state and not state.initialized(source):
+                state.initialize(source)
+            LOG.info("source=%s parsed=0 (no actionable alert)", source)
+            continue
         first = bool(state and not state.initialized(source))
         newest = max(events, key=lambda e: e.occurred_at).key
         for event in events:
@@ -214,7 +226,7 @@ def poll(config, state=None, sender=None, fetcher=fetch_source, now=None, previe
             continue
         if state and state.seen(key):
             continue
-        if state and phase not in {"confirmed", "disputed"} and state.seen(identity + ":v2:confirmed"):
+        if state and phase not in {"confirmed", "disputed"} and state.completed(identity):
             continue
         if not config["notify_possible"] and phase != "confirmed":
             continue
@@ -265,18 +277,23 @@ def main(argv=None):
         secret = os.environ.get("FEISHU_SECRET", "")
         sender = lambda text: send_feishu(webhook, text, secret, config["request_timeout_seconds"])
         if args.command == "test-message":
-            from .notifications import demo_messages
-            real_events, failed_sources = [], []
-            if args.real_samples:
-                for source in config["sources"]:
-                    try:
-                        real_events.extend(fetch_source(source, config["request_timeout_seconds"]))
-                    except Exception as exc:
-                        LOG.error("demo source=%s failed (%s)", source, type(exc).__name__)
-                        failed_sources.append(source)
-                if not real_events:
-                    raise RequestError("No real sample source available; no demo messages sent")
-            messages = demo_messages(real_events, failed_sources=failed_sources)
+            if config["sources"] == ["reset"]:
+                messages = fetch_reset_samples(config["request_timeout_seconds"]) if args.real_samples else reset_demo_messages()
+                if not messages:
+                    raise RequestError("No sample available; no demo messages sent")
+            else:
+                from .notifications import demo_messages
+                real_events, failed_sources = [], []
+                if args.real_samples:
+                    for source in config["sources"]:
+                        try:
+                            real_events.extend(fetch_source(source, config["request_timeout_seconds"]))
+                        except Exception as exc:
+                            LOG.error("demo source=%s failed (%s)", source, type(exc).__name__)
+                            failed_sources.append(source)
+                    if not real_events:
+                        raise RequestError("No real sample source available; no demo messages sent")
+                messages = demo_messages(real_events, failed_sources=failed_sources)
             for number, message in enumerate(messages, 1):
                 if number > 1:
                     time.sleep(1)

@@ -125,6 +125,7 @@ class PollTests(unittest.TestCase):
         self.path = str(Path(self.temp.name) / "state.sqlite3")
         self.state = State(self.path)
         self.config = dict(DEFAULTS)
+        self.config["sources"] = ["com", "org"]
         self.messages = []
 
     def tearDown(self):
@@ -321,17 +322,18 @@ class MessageTests(unittest.TestCase):
         with patch("radar.app.logging.basicConfig"), patch("radar.app.time.sleep"):
             self.assertEqual(main(["test-message"]), 0)
         state_mock.assert_not_called()
-        self.assertEqual(send_mock.call_count, 7)
+        self.assertEqual(send_mock.call_count, 2)
         payloads = [call.args[1] for call in send_mock.call_args_list]
-        self.assertIn("验收说明", payloads[0])
-        self.assertTrue(all("非真实通知" in message for message in payloads[1:]))
+        self.assertTrue(payloads[0].startswith("Codex 已安排重置"))
+        self.assertTrue(payloads[1].startswith("Codex 已重置"))
+        self.assertTrue(all("非真实通知" in message for message in payloads))
 
     @patch("radar.app.State")
     @patch("radar.app.send_feishu")
     @patch("radar.app.fetch_source", side_effect=lambda source, timeout: [event(source)])
     @patch.dict("os.environ", {"FEISHU_WEBHOOK_URL": "https://open.feishu.cn/open-apis/bot/v2/hook/test-placeholder"})
     def test_real_sample_cli_fetches_sources_without_writing_production_state(self, fetch_mock, send_mock, state_mock):
-        with patch("radar.app.logging.basicConfig"), patch("radar.app.time.sleep"):
+        with patch("radar.app.logging.basicConfig"), patch("radar.app.time.sleep"), patch("radar.app.settings", return_value={**DEFAULTS, "sources": ["com", "org"]}):
             self.assertEqual(main(["test-message", "--real-samples"]), 0)
         self.assertEqual(fetch_mock.call_count, 2)
         self.assertEqual(send_mock.call_count, 7)
@@ -343,7 +345,7 @@ class MessageTests(unittest.TestCase):
     @patch("radar.app.fetch_source", side_effect=RequestError("unavailable"))
     @patch.dict("os.environ", {"FEISHU_WEBHOOK_URL": "https://open.feishu.cn/open-apis/bot/v2/hook/test-placeholder"})
     def test_real_sample_failure_does_not_send_a_synthetic_batch_as_real(self, fetch_mock, send_mock, state_mock):
-        with patch("radar.app.logging.basicConfig"), self.assertLogs("radar", level="ERROR"):
+        with patch("radar.app.logging.basicConfig"), patch("radar.app.settings", return_value={**DEFAULTS, "sources": ["com", "org"]}), self.assertLogs("radar", level="ERROR"):
             self.assertEqual(main(["test-message", "--real-samples"]), 1)
         send_mock.assert_not_called()
         state_mock.assert_not_called()

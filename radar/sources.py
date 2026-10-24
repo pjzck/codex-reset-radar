@@ -2,7 +2,7 @@
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
@@ -37,9 +37,12 @@ class Event:
     evidence: str
     source_id: str = ""
     basis: str = ""
+    details: dict = field(default_factory=dict)
 
     @property
     def identity(self):
+        if self.source == "reset":
+            return "reset:" + self.source_id
         match = re.search(r"/status/(\d+)", self.url)
         identity = "x:" + match.group(1) if match else self.source + ":" + self.source_id
         if not match and not self.source_id:

@@ -1,52 +1,58 @@
 # Codex Reset Radar · Codex 重置雷达
 
-监测两个非官方 Codex 重置追踪站点，将新公告发送到可配置的飞书 / Lark 群机器人。
+监测 [codex-reset.com](https://codex-reset.com/) 的重置通知，以简洁中文消息发送到飞书 / Lark 群机器人。默认只读取这一个网站，不做双站交叉核对。
 
-Python 3.9+，**零第三方 Python 依赖**。区分重置预告、正在执行、执行确认与待核实信息；支持普通 / Banked 重置、跨站去重、SQLite 持久状态、飞书签名和 Linux systemd 部署。
+Python 3.9+，零第三方 Python 依赖。支持预告、网站观测到账、后续 Tibo 确认、备用重置、北京时间、持久去重和 GitHub 拉取部署。
 
-## 数据来源与通知语义
+## 通知格式
 
-| 来源 | 获取方式 | 处理方式 |
-| --- | --- | --- |
-| [codexresets.com](https://codexresets.com/) | 首页 HTML 的公告列表 | 使用机器时间戳、公告原文、状态标签和 X 原始链接；不使用预测概率判断重置 |
-| [codex-resets.org](https://codex-resets.org/) | [`/api/resets`](https://codex-resets.org/api/resets) JSON，最近一页 | 保留普通 / Banked 类型和 `x_post` / `observed` 来源标注 |
+网站观测确认后发送：
 
-这两个站点不是 OpenAI 官方接口。机器人报告的是**站点收录的信息**，不能验证个人额度是否到账。通知分别列出每个**采集网站的名称和网站链接**，再单独附上**原始 X 公告链接**；保留各站原文、原始标注、判断依据和北京时间（固定 UTC+8）。网站标注时间不等同于原始发布时间或实际执行时间。
+```text
+Codex 已重置
+类型：常规重置
+观测时间：2026-10-24 01:40:51（北京时间）
+公告译文：
+Codex 重置已确认。
+我们的检查显示，Codex 用量额度约于北京时间 01:40 重置。
+Tibo 尚未发布确认消息，后续确认后可能更新。
+消息来源：网站观测
+网站：https://codex-reset.com/
+相关公告：原始公告链接
+```
 
-通知首先展示**状态标题、中文内容摘要、预计重置时间、实际重置时间、状态变化、采集时间和核对结果**，再展示参考网站、链接及原文。所有生成的时间字段统一使用北京时间。站点记录时间放到参考信息中并注明“非重置时间”，不用于填补预计 / 实际时间。
+预告发送：
 
-首行使用明确分类，例如 `重置预告 | Codex Reset Radar`、`重置确认 | Codex Reset Radar`；另有重置执行中、重置待确认、重置信号和来源分歧。
+```text
+Codex 已安排重置
+类型：常规重置
+公告时间：2026-10-23 12:47:34（北京时间）
+预计最晚：2026-10-24 01:00:00（北京时间）
+状态：等待网站确认执行
+公告原文：
+Landing tomorrow before 10am PST together with a small ship.
+消息来源：Tibo（@thsottiaux）
+网站：https://codex-reset.com/
+原文链接：原始公告链接
+```
 
-摘要后单独列出执行状态。“已确认执行”与“具体几点执行”分开：完成公告没有给出时刻时，仍显示执行已确认，时间注明“具体时刻待确认（原公告未披露；执行本身已确认）”。
+上面是格式示例。运行时采用网站当前记录，所有生成的时间统一换算为北京时间。网站和原文链接保留在消息末尾，不重复展示摘要、核对结果或多个未知时间字段。
 
-中文摘要基于公告中可识别的重置动作、普通 / Banked 类型、适用用户或套餐、备用机会次数、小版本更新及故障背景提取要点；这是针对重置公告的规则摘要，不是通用全文翻译，不需要额外模型 API 或 Token。遇到不熟悉的表述不补充原文没有的信息。
+## 数据与判定
 
-重置时间仅从公告原文中提取：明确日期、时刻及 UTC / 数字偏移 / PST / PDT / PT 等时区会换算到北京时间；“明天”“3 小时后”等相对表述使用原始 X 公告 ID 中的创建时间作为基准，不以抓取时间或站点记录时间代替。X ID 依据 [X 官方说明](https://docs.x.com/fundamentals/x-ids) 和 [Snowflake 原始实现](https://github.com/twitter-archive/snowflake/blob/snowflake-2010/src/main/scala/com/twitter/service/snowflake/IdWorker.scala) 解码。
+运行时每轮读取该站的[中文通知 API](https://codex-reset.com/api/forecast?locale=zh&tz=Asia%2FShanghai)，使用 `latest_alert` 的结构化状态：
 
-没有明确重置时间就显示 **待确认**；只有“Done”不能当成公告发布时刻执行。日期 / 时区缺失、CST 等时区歧义、两站给出不同时间、PT 夏令时重叠或不存在的时刻均不猜测。PST 按 UTC−8、PDT 按 UTC−7；PT 使用系统 IANA 时区库按日期处理夏令时，缺少时区数据时显示待确认。仅给出“几小时内”“当天结束前”等含糊范围也保留待确认。时区机制参见 [Python zoneinfo 文档](https://docs.python.org/3/library/zoneinfo.html)。
+- 网站报告 `operator_observed` / `probe_observed` 且状态为 confirmed：显示“已重置”，来源明确标为“网站观测”；不要求 Tibo 已发布消息。
+- Tibo 后续确认或网站修正观测时间时，可发送一次新的确认更新。
+- Watch / 预告：显示“已安排重置”，使用网站提供的 `window.target_at` / `end_at` 作为截止时间，不重新猜测 PST 是否指 PT。
+- 到了预计时间仍不能自动升级为“已重置”。模型概率、普通讨论和弱暗示不会被当作已安排重置。
+- 网站没有提供明确截止时间时显示“待确认”；观测时间、公告时间与执行时间不混用。
 
-| 通知状态 | 判定与含义 |
-| --- | --- |
-| 🕒 重置预告 | 来源明确预告，或原文描述未来计划；到点也不会自动变成已执行 |
-| 🔄 正在执行 | 原文描述正在重置、发放或逐步生效；不等于所有账户完成 |
-| ✅ 已执行（公告确认） | 原始公告有明确完成表述，例如已经重置、完成、全部生效 |
-| 🔎 执行待确认 | 只有站点观测、模糊措辞或缺少执行依据 |
-| 💭 可能重置信号 | 来源明确标为可能 / 未确认信号 |
-| ⚠️ 来源状态存在分歧 | 同一公告在两站的预告 / 执行结论或重置类型不一致 |
+中文观测译文直接采用网站的中文内容，其中明确的 UTC 时间换算为北京时间。此站是非官方追踪器，网站观测与 Tibo 确认在来源字段中区分，均不等于读取你的个人账户。
 
-`.org` 的 `observed` 记录不会默认当作执行确认；无 `status` 字段也不会默认已执行。`.com` 即使标为 `OPERATOR CONFIRMED`，原文仍是未来计划时仍归预告；`DELIVERED AS SCHEDULED` 也不能仅凭到点视为执行。原文分类使用保守的已知措辞规则；不认识的新表述保留为待确认，可能需要后续维护规则。
+旧的 `com` / `org` 来源仅为兼容已有配置保留。默认配置及当前部署只使用 `reset`，即 codex-reset.com。
 
-同一 X 公告 ID、同一阶段只发一次；预告随后获得执行证据，会发送“状态更新”。一个来源发现即可通知，不强制等待双站；另一站稍后收录只记录佐证，不重复发消息。双站一致只表示采集结果一致；有分歧时合并为一条待核实通知，保留双方信息。来源故障会在可用来源的通知中注明。不同 X 公告仍视为不同事件，无 X 链接的记录按站点 ID 去重。
-
-升级时保留旧去重记录，先静默建立新分类基线，不重播历史；旧版误把观测当执行的记录，不会阻止之后真正出现的执行证据。每站最新观察和成功通知的阶段保存在 SQLite，重启后继续使用。轮询只读取公开页面，不需要 Codex Token、X 账号或浏览器。
-
-### RSS 与订阅
-
-2026-10-24 检查结果：两个站点均未发现公开 RSS / Atom / JSON Feed；首页没有 Feed 自动发现链接，`/rss.xml`、`/feed.xml`、`/atom.xml`、`/feed.json` 均返回 404，站点地图也没有订阅源。
-
-`.com` 有[邮件订阅入口](https://codexresets.com/#subscribe)，需要邮箱确认；不是机器推送 API。`.org` 的 `/api/resets` 返回 JSON，响应为 `Cache-Control: no-store, must-revalidate`，适合定时检查。目前采用每轮结束后等待 60 秒再检查；`.com` 首页响应还声明 `max-age=60, s-maxage=120`，实际通知延迟包括网站自身同步、共享缓存和本机器检查间隔，不能承诺秒级到账。上述为公开入口的检查结果，不代表不存在未公开接口。
-
-## 本地运行
+## 配置与运行
 
 ```bash
 git clone https://github.com/pjzck/codex-reset-radar.git
@@ -54,60 +60,53 @@ cd codex-reset-radar
 cp .env.example .env
 ```
 
-编辑 `.env`，填写自己的地址：
+编辑私密 `.env`，填写自己的群机器人地址：
 
 ```dotenv
 FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/YOUR_WEBHOOK_ID
 FEISHU_SECRET=
 ```
 
-`.env` 是私密配置，已加入 `.gitignore`。若飞书机器人启用了签名校验，填写 `FEISHU_SECRET`。若启用了关键词，允许 `Codex Reset Radar`；若启用了 IP 白名单，需要放行运行机器的出口 IP。参见[飞书自定义机器人指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)。
+`.env` 已加入 `.gitignore`。飞书启用签名校验时填写 `FEISHU_SECRET`；若设置关键词，允许 `Codex`。参见[飞书机器人指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)。
 
 ```bash
-# 只抓取并预览最近 72 小时公告，不发送、不改状态，不需要 Webhook
+# 预览，不发送、不改去重记录
 python -m radar preview
 
-# 单独发送一条验收说明，然后分别发送六种分类样例，不改变去重状态
+# 持续运行 / 检查一次
+python -m radar run --env-file .env
+python -m radar check --env-file .env
+
+# 分别发送两条简版格式样例
 python -m radar test-message --env-file .env
 
-# 优先使用实时采集到的历史公告，缺少的类别才用明确标记的合成样例
+# 使用同站真实数据：历史预告回放 + 当前通知，各自单独发送并注明用途
 python -m radar test-message --real-samples --env-file .env
-
-# 检查一次 / 持续运行
-python -m radar check --env-file .env
-python -m radar run --env-file .env
-
-# 查看各来源最近检查时间和处理记录数
-python -m radar status
 ```
 
-PowerShell 中用 `Copy-Item .env.example .env` 替代 `cp` 也可以。所有命令从项目根目录运行；相对路径按当前目录解析。
+PowerShell 可用 `Copy-Item .env.example .env`。命令从项目根目录运行。
 
-## 配置
+可复制 `config.example.json` 为 `config.local.json` 并通过 `--config config.local.json` 使用：
 
-复制 `config.example.json` 为 `config.local.json`，通过 `--config config.local.json` 使用。省略该参数时使用相同默认值。
-
-| 配置 | 默认 | 含义 |
+| 配置 | 默认值 | 含义 |
 | --- | --- | --- |
-| `sources` | `["com", "org"]` | 选择一个或两个来源 |
-| `poll_interval_seconds` | `60` | 每轮结束后等待秒数，最小 30 秒 |
-| `request_timeout_seconds` | `20` | 单次网络请求超时 |
-| `state_path` | `data/state.sqlite3` | 持久去重数据库；`RADAR_STATE_PATH` 可覆盖 |
-| `first_run` | `"latest"` | 首次每个来源只通知最新且在时效内的一条；`"silent"` 只建立基线 |
-| `max_event_age_hours` | `72` | 超过时效的历史记录不发送，防止首次运行或断线恢复刷屏 |
-| `notify_possible` | `true` | 是否通知预告、进行中和待确认信息；`false` 只发送有执行完成依据且无分歧的记录 |
+| `sources` | `["reset"]` | 只读 codex-reset.com |
+| `poll_interval_seconds` | `60` | 每轮结束后等待秒数，最小 30 |
+| `request_timeout_seconds` | `20` | 网络请求超时 |
+| `state_path` | `data/state.sqlite3` | SQLite 去重状态，`RADAR_STATE_PATH` 可覆盖 |
+| `first_run` | `latest` | 首次通知最新记录；`silent` 只建立基线 |
+| `max_event_age_hours` | `72` | 历史时效，过旧记录不推送 |
+| `notify_possible` | `true` | 是否发送预告；false 只发完成记录 |
 
-初次只推送最新记录，其余建立历史基线；已有状态时推送所有尚未处理且在时效内的记录。标注时间在未来的预告可以先通知，执行确认时间超过当前时间 5 分钟的记录保留到后续检查。一个来源失败不会阻止另一个；结构异常不会建立空基线。GET 请求对临时网络错误最多重试三次；飞书失败下轮重试，只有 HTTP 成功且飞书业务码为 0 才记为已发送。
+预告、观测确认、后续 Tibo 确认分别去重；重复轮询、重启和更新代码不会重复通知。同一公告的截止时间被网站修改时可通知修订。空闲时无可行动通知属于正常结果。接口异常会记录错误并下轮重试，不建立错误基线。
 
-SQLite 状态应保留在更新目录之外。飞书没有本机器人可用的幂等提交键：若飞书已经接收消息但返回响应前连接中断，或进程在发送后落库前崩溃，重试可能重复一次。此处选择优先不漏通知。只允许一个发送进程使用同一状态目录。
+飞书只有业务码为 0 才记为成功；失败下轮重试。若群已收到消息但响应中断，或发送后落库前进程崩溃，可能重复一次。只允许一个发送进程使用同一状态目录。
 
-## 部署到 Linux 服务器
+## Linux 部署
 
-部署链路：**本地提交 → GitHub → 服务器 `git pull --ff-only` → 测试 → systemd 重启**。不需要把 SSH 私钥或飞书地址放到 GitHub，也不依赖 GitHub Actions 连接国内服务器。
+流程：**本地提交 → 推送 GitHub → 服务器拉取 → 测试 → systemd 重启**。
 
-服务器需要 Python 3.9+、Git、systemd 和 `flock`。Rocky Linux 可先运行 `sudo dnf install -y git`，Ubuntu 可运行 `sudo apt-get install -y git`。已有 Python 无需 pip 安装依赖。
-
-首次在服务器运行：
+服务器需要 Python 3.9+、Git、systemd 和 flock。Rocky Linux 可运行 `sudo dnf install -y git`。
 
 ```bash
 sudo git clone https://github.com/pjzck/codex-reset-radar.git /opt/codex-reset-radar
@@ -117,54 +116,29 @@ sudoedit /etc/codex-reset-radar/radar.env
 sudo bash /opt/codex-reset-radar/scripts/deploy.sh
 ```
 
-部署脚本首次复制配置到 `/etc/codex-reset-radar/config.json`，之后保留你的修改。服务以 systemd 动态非特权用户运行，开机自动启动，异常退出自动重启；不监听公网端口。
+代码位于 `/opt/codex-reset-radar`；私密 Webhook 位于 `/etc/codex-reset-radar/radar.env`（权限 600）；行为配置位于 `/etc/codex-reset-radar/config.json`；去重数据库位于 `/var/lib/codex-reset-radar/state.sqlite3`。服务以非特权动态用户运行，开机自动启动，不监听公网端口。
 
-| 内容 | 服务器路径 |
-| --- | --- |
-| GitHub 代码副本 | `/opt/codex-reset-radar` |
-| Webhook / 签名私密配置 | `/etc/codex-reset-radar/radar.env`，权限 600 |
-| 行为配置 | `/etc/codex-reset-radar/config.json` |
-| 去重数据库 | `/var/lib/codex-reset-radar/state.sqlite3`，由 systemd 管理 |
-| systemd 服务 | `codex-reset-radar.service` |
-
-### 修改代码后发布
-
-在本地项目根目录提交改动，然后执行：
+本地提交代码后执行：
 
 ```powershell
-git add <你改动的文件>
-git commit -m "Describe the change"
 .\scripts\publish-deploy.ps1
 ```
 
-默认使用你本机 SSH 别名 `tx-cloud`。其他服务器可传 `-Server your-ssh-alias`。脚本先跑测试、要求已提交全部本地修改、推送 `main`，再通过 SSH 让服务器从 GitHub 拉取并部署；服务器存在未提交改动或分支不符时会停止，不会强制覆盖。
-
-也可以手工执行：
-
-```bash
-git push origin main
-ssh tx-cloud 'bash /opt/codex-reset-radar/scripts/deploy.sh'
-```
-
-### 运维
+默认 SSH 别名为 `tx-cloud`，可用 `-Server other-alias` 修改。服务器若有未提交更改或不在 main 分支，部署脚本会停止，避免覆盖。
 
 ```bash
 sudo systemctl status codex-reset-radar --no-pager
-sudo journalctl -u codex-reset-radar -n 50 --no-pager
-sudo journalctl -u codex-reset-radar -f
-sudo systemctl restart codex-reset-radar
+sudo journalctl -u codex-reset-radar -n 30 --no-pager
 ```
 
-服务保持运行不等于数据源健康；查看日志中 `sources_ok=2 sources_failed=0` 或数据库 `health` 检查各站点是否成功。网站改版、网络错误或飞书拒绝发送时会在日志中记录错误，服务继续下轮重试。`.org` 每次仅获取最新一页，停机过久可能错过该页之外的公告。
-
-## 开发与验证
+## 开发
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-自动化测试模拟飞书发送，不会发送真实消息。`test-message` 是主动发送的格式验收命令：说明独立一条，六种分类各发一条，间隔一秒，不合并。`--real-samples` 会重新采集两站，按完整的跨站判定选择每类最新真实案例；缺少对应历史记录的类别才用合成样例。每条样例单独标记“历史实采，非新增通知”或“合成样例，非真实通知”，后者的参考网站明确标为占位，所有来源都失败时不发送。历史案例保留实际原文及日期，不改成当前新发生的事件，也不写生产通知或去重状态。CI 在 Python 3.9 / 3.12 / 3.14 验证分类、逐条发送、真实与合成标识、时间换算、跨站核对、持久去重、旧状态迁移和签名。
+自动化测试模拟发送，不会发真实消息。`test-message` 是明确发送的验收命令，不打开生产去重数据库。真实历史预告回放不代表当前仍待执行，消息会标明“非当前状态”。
 
 ## License
 
-MIT © 2026 pjzck。站点与公告内容归各自权利人所有；本项目不隶属于 OpenAI 或两个数据源网站。
+MIT © 2026 pjzck。公告与网站内容归各自权利人所有，本项目不隶属于 OpenAI 或数据来源网站。

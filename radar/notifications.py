@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from .content import chinese_summary, time_labels
+from .reset_site import format_reset_message, reset_key
 
 SOURCE_SITES = {"com": "https://codexresets.com/#log-heading", "org": "https://codex-resets.org/"}
 SOURCE_NAMES = {"com": "Codex Resets（codexresets.com）", "org": "Codex Resets Unofficial Tracker（codex-resets.org）"}
@@ -26,6 +27,8 @@ def notification_phase(events):
 
 
 def notification_key(events):
+    if events[0].source == "reset":
+        return reset_key(events[0])
     phase = notification_phase(events)
     identity = events[0].identity
     if phase == "disputed":
@@ -36,6 +39,8 @@ def notification_key(events):
 
 
 def format_message(events, failed_sources=(), previous_phases=(), collected_at=None, demo=False):
+    if events[0].source == "reset":
+        return format_reset_message(events[0], demo=demo)
     events = sorted(events, key=lambda e: e.source)
     phase = notification_phase(events)
     icons = {"possible": "💭", "scheduled": "🕒", "reported": "🔎", "executing": "🔄", "confirmed": "✅", "disputed": "⚠️"}

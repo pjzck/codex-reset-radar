@@ -77,7 +77,7 @@ SQLite 状态应保留在更新目录之外。飞书没有本机器人可用的�
 
 ```bash
 sudo git clone https://github.com/pjzck/codex-reset-radar.git /opt/codex-reset-radar
-sudo install -d -m 700 /etc/codex-reset-radar
+sudo install -d -m 755 /etc/codex-reset-radar
 sudo install -m 600 /opt/codex-reset-radar/.env.example /etc/codex-reset-radar/radar.env
 sudoedit /etc/codex-reset-radar/radar.env
 sudo bash /opt/codex-reset-radar/scripts/deploy.sh

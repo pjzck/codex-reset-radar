@@ -17,9 +17,9 @@ cd "$repo_dir"
 [[ "$(git branch --show-current)" == main ]] || { echo 'Expected branch main.' >&2; exit 1; }
 git pull --ff-only origin main
 python3 -m unittest discover -s tests -v
-install -d -m 700 /etc/codex-reset-radar
+install -d -m 755 /etc/codex-reset-radar
 if [[ ! -f /etc/codex-reset-radar/config.json ]]; then
-  install -m 600 config.example.json /etc/codex-reset-radar/config.json
+  install -m 644 config.example.json /etc/codex-reset-radar/config.json
 fi
 if [[ ! -s /etc/codex-reset-radar/radar.env ]]; then
   echo 'Create /etc/codex-reset-radar/radar.env with FEISHU_WEBHOOK_URL first.' >&2

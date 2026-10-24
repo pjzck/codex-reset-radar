@@ -1,0 +1,9 @@
+{
+  "sources": ["com", "org"],
+  "poll_interval_seconds": 120,
+  "request_timeout_seconds": 20,
+  "state_path": "data/state.sqlite3",
+  "first_run": "latest",
+  "max_event_age_hours": 72,
+  "notify_possible": true
+}

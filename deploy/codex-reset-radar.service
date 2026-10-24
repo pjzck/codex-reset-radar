@@ -1,0 +1,25 @@
+[Unit]
+Description=Codex Reset Radar Feishu notifier
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+WorkingDirectory=/opt/codex-reset-radar
+EnvironmentFile=/etc/codex-reset-radar/radar.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=RADAR_STATE_PATH=/var/lib/codex-reset-radar/state.sqlite3
+StateDirectory=codex-reset-radar
+ExecStart=/usr/bin/python3 -m radar run --config /etc/codex-reset-radar/config.json
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

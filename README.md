@@ -104,7 +104,7 @@ PowerShell 可用 `Copy-Item .env.example .env`。命令从项目根目录运行
 
 ## Linux 部署
 
-流程：**本地提交 → 推送 GitHub → 服务器拉取 → 测试 → systemd 重启**。
+流程：**本地提交 → 推送 GitHub → 服务器拉取 → 导入检查 → systemd 重启**。
 
 服务器需要 Python 3.9+、Git、systemd 和 flock。Rocky Linux 可运行 `sudo dnf install -y git`。
 
@@ -137,7 +137,9 @@ sudo journalctl -u codex-reset-radar -n 30 --no-pager
 python -m unittest discover -s tests -v
 ```
 
-自动化测试模拟发送，不会发真实消息。`test-message` 是明确发送的验收命令，不打开生产去重数据库。真实历史预告回放不代表当前仍待执行，消息会标明“非当前状态”。
+只保留两条核心冒烟测试，覆盖预告与网站观测、发送失败重试、重启后去重；不为格式细节或旧来源扩展测试。CI 只运行 Python 3.9，发布和部署不重复跑测试，服务器只检查模块能否导入。
+
+自动化检查模拟发送，不会发真实消息。`test-message` 是可选的手动验收命令，不打开生产去重数据库。真实历史预告回放不代表当前仍待执行，消息会标明“非当前状态”。
 
 ## License
 

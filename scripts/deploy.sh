@@ -16,7 +16,7 @@ cd "$repo_dir"
 [[ -z "$(git status --porcelain)" ]] || { echo 'Server checkout contains changes; refusing to overwrite.' >&2; exit 1; }
 [[ "$(git branch --show-current)" == main ]] || { echo 'Expected branch main.' >&2; exit 1; }
 git pull --ff-only origin main
-python3 -m unittest discover -s tests -v
+python3 -c 'import radar.app'
 install -d -m 755 /etc/codex-reset-radar
 if [[ ! -f /etc/codex-reset-radar/config.json ]]; then
   install -m 644 config.example.json /etc/codex-reset-radar/config.json

@@ -25,6 +25,13 @@ def _deadline(window):
     return _iso(value)
 
 
+def _is_preview(summary):
+    # Accept terse deadlines only within the site's structured watch alerts.
+    clock = r"(?:midnight|noon|eod|end of (?:the )?day|(?:0?[1-9]|1[0-2])(?::[0-5]\d)?\s*[ap]m|(?:[01]?\d|2[0-3]):[0-5]\d)"
+    short_deadline = r"\s*(?:by|before)\s+" + clock + r"(?:\s+(?:PST|PDT|PT|UTC|GMT))?(?:\s+(?:today|tomorrow))?[.!]?\s*"
+    return execution_phase(summary)[0] == "scheduled" or bool(re.fullmatch(short_deadline, summary, re.I))
+
+
 def parse_reset_forecast(payload):
     if not isinstance(payload, dict) or "latest_alert" not in payload or not payload.get("updated_at"):
         raise ValueError("Invalid codex-reset.com forecast response")
@@ -57,7 +64,7 @@ def parse_reset_forecast(payload):
     summary = alert.get("summary")
     if not isinstance(summary, str) or not summary.strip():
         raise ValueError("Empty codex-reset.com alert")
-    if kind == "watch" and not _deadline(alert.get("window")) and execution_phase(summary)[0] != "scheduled":
+    if kind == "watch" and not _deadline(alert.get("window")) and not _is_preview(summary):
         return []
     origin = str(alert.get("confirmation_source") or "")
     observed = origin in {"operator_observed", "probe_observed"} or (banked and alert.get("observed") is True)

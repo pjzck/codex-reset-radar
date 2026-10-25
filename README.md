@@ -45,6 +45,7 @@ Landing tomorrow before 10am PST together with a small ship.
 - 网站报告 `operator_observed` / `probe_observed` 且状态为 confirmed：显示“已重置”，来源明确标为“网站观测”；不要求 Tibo 已发布消息。
 - Tibo 后续确认或网站修正观测时间时，可发送一次新的确认更新。
 - Watch / 预告：显示“已安排重置”，使用网站提供的 `window.target_at` / `end_at` 作为截止时间，不重新猜测 PST 是否指 PT。
+- 支持网站 Watch 中的简短截止时间表述，如 `By midnight PST`、`Before 10am PT`、`By EOD`；缺少明确时间窗口时仍通知预告，预计最晚标为“待确认”。
 - 到了预计时间仍不能自动升级为“已重置”。模型概率、普通讨论和弱暗示不会被当作已安排重置。
 - 网站没有提供明确截止时间时显示“待确认”；观测时间、公告时间与执行时间不混用。
 

@@ -13,17 +13,24 @@ from radar.transport import RequestError
 NOW = datetime(2026, 10, 24, 4, tzinfo=timezone.utc)
 
 
-def notice(completed=False, expired=False, summary=None):
+def notice(completed=False, expired=False, summary=None, score=None, pending=None, model_probability=None):
     alert = {"id": "2113492502355562875", "kind": "watch", "state": "expired" if expired else "active",
              "source_at": "2026-10-23T04:47:34Z", "summary": "Landing tomorrow before 10am PST.",
              "url": "https://x.com/thsottiaux/status/2113492502355562875",
              "window": {"target_kind": "deadline", "target_at": "2026-10-23T17:00:00Z"}}
     if summary is not None:
         alert.update(summary=summary, window=None)
+    if score is not None:
+        alert["score"] = score
+    if pending is not None:
+        alert["pending"] = pending
     if completed:
         alert.update(kind="reset", state="confirmed", confirmation_source="operator_observed",
                      observed_at="2026-10-23T17:40:51Z", observation_message="Codex 重置已确认。Tibo 尚未发布确认消息。")
-    return parse_reset_forecast({"updated_at": "2026-10-24T04:00:00Z", "latest_alert": alert})
+    payload = {"updated_at": "2026-10-24T04:00:00Z", "latest_alert": alert}
+    if model_probability is not None:
+        payload["probabilities"] = {"rounded_24h": model_probability}
+    return parse_reset_forecast(payload)
 
 
 class SmokeTests(unittest.TestCase):
@@ -33,11 +40,17 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("预计最晚：2026-10-24 01:00:00（北京时间）", format_message(planned))
         self.assertEqual(completed[0].phase, "confirmed")
         self.assertIn("消息来源：网站观测", format_message(completed))
-        for summary in ("By midnight PST", "Before 10am PT", "By EOD"):
+        self.assertIn("状态更新：重置预告 → 已重置", format_message(completed, previous_phases=("scheduled",)))
+        for summary in ("By midnight PST", "Before 10am PT", "By EOD", "Maybe later."):
             preview = notice(summary=summary)
             self.assertEqual(preview[0].phase, "scheduled")
             self.assertIn("预计最晚：待确认", format_message(preview))
-        self.assertEqual(notice(summary="Maybe later."), [])
+        scored = format_message(notice(summary="Maybe later.", score=83))
+        self.assertIn("重置概率：83%（公告时点", scored)
+        modelled = format_message(notice(summary="Maybe later.", model_probability=53))
+        self.assertIn("重置概率：53%（未来 24 小时", modelled)
+        self.assertNotIn("重置概率", format_message(notice(summary="Maybe later.")))
+        self.assertEqual(notice(summary="Maybe later.", pending="done"), [])
 
     def test_retry_and_persistent_deduplication(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as folder:

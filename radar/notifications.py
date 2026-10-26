@@ -40,7 +40,7 @@ def notification_key(events):
 
 def format_message(events, failed_sources=(), previous_phases=(), collected_at=None, demo=False):
     if events[0].source == "reset":
-        return format_reset_message(events[0], demo=demo)
+        return format_reset_message(events[0], demo=demo, previous_phases=previous_phases)
     events = sorted(events, key=lambda e: e.source)
     phase = notification_phase(events)
     icons = {"possible": "💭", "scheduled": "🕒", "reported": "🔎", "executing": "🔄", "confirmed": "✅", "disputed": "⚠️"}

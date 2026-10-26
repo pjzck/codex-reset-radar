@@ -5,7 +5,7 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 
-from .sources import Event, execution_phase, safe_url, timestamp
+from .sources import Event, safe_url, timestamp
 from .transport import request
 
 SITE = "https://codex-reset.com/"
@@ -23,13 +23,6 @@ def _deadline(window):
         return ""
     value = (window.get("target_at") or window.get("end_at")) if window.get("target_kind") == "deadline" else window.get("end_at")
     return _iso(value)
-
-
-def _is_preview(summary):
-    # Accept terse deadlines only within the site's structured watch alerts.
-    clock = r"(?:midnight|noon|eod|end of (?:the )?day|(?:0?[1-9]|1[0-2])(?::[0-5]\d)?\s*[ap]m|(?:[01]?\d|2[0-3]):[0-5]\d)"
-    short_deadline = r"\s*(?:by|before)\s+" + clock + r"(?:\s+(?:PST|PDT|PT|UTC|GMT))?(?:\s+(?:today|tomorrow))?[.!]?\s*"
-    return execution_phase(summary)[0] == "scheduled" or bool(re.fullmatch(short_deadline, summary, re.I))
 
 
 def parse_reset_forecast(payload):
@@ -64,7 +57,8 @@ def parse_reset_forecast(payload):
     summary = alert.get("summary")
     if not isinstance(summary, str) or not summary.strip():
         raise ValueError("Empty codex-reset.com alert")
-    if kind == "watch" and not _deadline(alert.get("window")) and not _is_preview(summary):
+    if kind == "watch" and alert.get("pending"):
+        # Tibo 自述完成或进行中、站点尚未观测到的预警，本轮先不通知。
         return []
     origin = str(alert.get("confirmation_source") or "")
     observed = origin in {"operator_observed", "probe_observed"} or (banked and alert.get("observed") is True)
@@ -89,6 +83,15 @@ def parse_reset_forecast(payload):
     }
     if "measured_at" in alert:
         details["measured_at"] = _iso(alert.get("measured_at"))
+    score = alert.get("score")
+    probability = score if isinstance(score, int) and not isinstance(score, bool) else None
+    probability_basis = "alert" if probability is not None else ""
+    if probability is None:
+        rounded = (payload.get("probabilities") or {}).get("rounded_24h")
+        if isinstance(rounded, int) and not isinstance(rounded, bool):
+            probability, probability_basis = rounded, "model_24h"
+    details["probability"] = probability
+    details["probability_basis"] = probability_basis
     event_at = observed_at if observed else published
     return [Event("reset", timestamp(event_at), summary, "banked" if banked else "regular", phase,
                   url, "网站观测" if observed else "Tibo（@thsottiaux）" if details["origin"] == "tibo" else "网站确认",
@@ -141,7 +144,7 @@ def _observation_translation(event):
     return re.sub(r"(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2})\s*UTC", convert, body)
 
 
-def format_reset_message(event, demo=False):
+def format_reset_message(event, demo=False, previous_phases=()):
     details = event.details
     observed = details.get("origin") == "website"
     banked = event.kind == "banked"
@@ -150,13 +153,19 @@ def format_reset_message(event, demo=False):
     lines = [title, "类型：" + ("备用重置" if banked else "常规重置")]
     if scheduled:
         lines.extend(["公告时间：" + _beijing(details.get("announced_at")),
-                      "预计最晚：" + _beijing(details.get("expected_end_at")),
-                      "状态：等待网站确认执行", details.get("original_label", "公告原文") + "：",
+                      "预计最晚：" + _beijing(details.get("expected_end_at"))])
+        probability = details.get("probability")
+        if isinstance(probability, int):
+            basis = "公告时点" if details.get("probability_basis") == "alert" else "未来 24 小时"
+            lines.append("重置概率：{}%（{}，站点模型，非官方承诺）".format(probability, basis))
+        lines.extend(["状态：等待网站确认执行", details.get("original_label", "公告原文") + "：",
                       details.get("original") or event.text])
         source = "Tibo（@thsottiaux）"
     elif observed:
-        lines.extend(["观测时间：" + _beijing(details.get("observed_at")),
-                      "公告译文：", _observation_translation(event)])
+        lines.extend(["观测时间：" + _beijing(details.get("observed_at"))])
+        if "scheduled" in previous_phases:
+            lines.append("状态更新：重置预告 → 已重置")
+        lines.extend(["公告译文：", _observation_translation(event)])
         source = "网站观测" + ("，Tibo 已确认" if details.get("confirmation_url") else "")
     else:
         translated = details.get("translation", "")
@@ -206,7 +215,7 @@ def reset_demo_messages():
         "confirmation_source": "operator_observed", "observed_at": "2026-10-23T17:40:51Z",
         "observation_message": "Codex 重置已确认。\n我们的检查显示，Codex 用量额度已于 10月23日 17:40 UTC 左右重置。\nTibo 尚未发布确认消息。他发布后，我们可能会更新这条消息。"}})[0]
     scheduled = parse_reset_forecast({"updated_at": "2026-10-24T04:00:00Z", "latest_alert": {
-        "id": "2113492502355562875", "kind": "watch", "state": "active",
+        "id": "2113492502355562875", "kind": "watch", "state": "active", "score": 83,
         "source_at": "2026-10-23T04:47:34Z", "summary": "Landing tomorrow before 10am PST together with a small ship.",
         "url": "https://x.com/thsottiaux/status/2113492502355562875",
         "window": {"target_kind": "deadline", "target_at": "2026-10-23T17:00:00Z"}}})[0]
